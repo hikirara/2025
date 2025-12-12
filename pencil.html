@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ジェネレーティブ・ドット・アート</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            overflow: hidden; /* スクロールバーを非表示 */
+            background-color: #FFF; /* 背景色を白に */
+            height: 100%;
+            width: 100%;
+            cursor: default; /* 全体のカーソルはデフォルト */
+        }
+        canvas {
+            display: block;
+            cursor: pointer; /* クリック可能なことを示す */
+        }
+        /* 情報テキスト用のスタイルは削除しました */
+    </style>
+    
+
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400&display=swap" rel="stylesheet">
+</head>
+<body>
+    
+
+<canvas id="artCanvas"></canvas>
+
+    
+
+<script>
+        // --- 定数と変数の設定 ---
+        const canvas = document.getElementById('artCanvas');
+        const ctx = canvas.getContext('2d');
+        // infoTextの要素取得を削除
+
+        const NUM_PARTICLES = 2000; // パーティクル（ドット）の数: 2400から2000に変更
+        const particles = [];
+        let time = 0; // 時間経過の変数
+        
+        // 現在のパラメータと目標パラメータ
+        let currentParams = { p1: 0, p2: 0, p3: 0, p4: 0, p5: 0, p6: 0 };
+        let targetParams = { p1: 0, p2: 0, p3: 0, p4: 0, p5: 0, p6: 0 };
+        let transitionProgress = 1; // 変化の進捗 (0から1)
+        const TRANSITION_SPEED = 0.001; // 変化の速さをさらにゆっくりに
+
+        // --- カメラワーク用の変数 ---
+        let rotationAngle = 0;
+        let zoomLevel = 1.0; // 初期ズームレベル
+        const ZOOM_INCREMENT = 0.05; // ズームの感度
+        const ZOOM_MIN = 0.5;
+        const ZOOM_MAX = 3.0;
+
+        // --- マウス操作用の変数 ---
+        let isDragging = false;
+        let lastMouseX = 0;
+
+        // --- パーティクルクラス ---
+        class Particle {
+            constructor(index) {
+                this.angle = (Math.PI * 2 / NUM_PARTICLES) * index;
+                this.x = 0; 
+                this.y = 0; 
+            }
+
+            // パーティクルの位置を更新
+            update(centerX, centerY) {
+                // 現在のパラメータを使用
+                const { p1, p2, p3, p4, p5, p6 } = currentParams;
+
+                const radius = Math.sin(this.angle * p1 + time) * 100 + 
+                               Math.cos(this.angle * p2 + time) * 150 + 200;
+                
+                this.x = centerX + Math.cos(this.angle * p3 + Math.sin(time * 0.05 * p4) * 0.5) * radius;
+                this.y = centerY + Math.sin(this.angle * p5 + Math.cos(time * 0.05 * p6) * 0.5) * radius;
+            }
+
+            // パーティクルを描画
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, 0.4, 0, Math.PI * 2); // 半径0.3から0.4に変更
+                ctx.fill();
+            }
+        }
+
+        // --- 線形補間関数 ---
+        function lerp(start, end, alpha) {
+            return start * (1 - alpha) + end * alpha;
+        }
+
+        // --- イージング関数 (InOutQuintic: 5次曲線) ---
+        // 変化の最初と最後が非常に緩やかで、中間が速い、より有機的な動きを実現
+        function easeInOutQuint(t) {
+            return t < 0.5 ? 16 * t * t * t * t * t : 1 - Math.pow(-2 * t + 2, 5) / 2;
+        }
+
+        // --- パターン切り替え（目標設定） ---
+        function setTargetPattern(isInitial = false) {
+            // 新しい目標パラメータをランダムに設定
+            targetParams = { 
+                p1: Math.random() * 10,
+                p2: Math.random() * 10,
+                p3: Math.random() * 10,
+                p4: Math.random() * 10,
+                p5: Math.random() * 10,
+                p6: Math.random() * 10
+            };
+            transitionProgress = 0; // 変化の進捗をリセット
+            // infoTextへの操作案内のテキスト更新を削除
+        }
+
+        // --- 初期化処理 ---
+        function init() {
+            particles.length = 0;
+            for (let i = 0; i < NUM_PARTICLES; i++) {
+                particles.push(new Particle(i));
+            }
+            // 最初のパターンを設定（即座に適用）
+            setTargetPattern(true);
+            currentParams = { ...targetParams }; // 初回は目標値を現在の値にする
+            zoomLevel = 1.0; // 初期ズームレベルを設定
+            animate();
+        }
+
+        // --- アニメーションループ ---
+        function animate() {
+            // 変化の進捗を更新
+            if (transitionProgress < 1) {
+                transitionProgress += TRANSITION_SPEED;
+                if (transitionProgress >= 1) {
+                    transitionProgress = 1;
+                    // 自然界のリズム：変化が完了したら、すぐに次の変化を開始する
+                    setTargetPattern(); 
+                }
+
+                // ******* 緩急の追加: イージングを適用した補間値 (alpha) を計算 *******
+                // 5次曲線(Quintic)のイージング関数を使用
+                const alpha = easeInOutQuint(transitionProgress);
+
+                // 現在のパラメータを目標パラメータに向かって補間
+                for (const key in currentParams) {
+                    // alphaとしてイージング適用後の値を使用
+                    currentParams[key] = lerp(currentParams[key], targetParams[key], alpha);
+                }
+                // ******************************************************************
+
+                // infoTextへの「形状が安定しました」のテキスト更新を削除
+            }
+
+            // 背景を白に近い色で少しだけ残すことで、軌跡が描かれるようにする
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.08)'; // 透明度を0.08に変更
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#444444'; // ドットの色を濃いグレーに (HEXコード #444444)
+
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+
+            // --- トランスフォーメーションの適用 ---
+            ctx.save();
+            ctx.translate(centerX, centerY);    // 原点を中心に移動
+            ctx.rotate(rotationAngle);          // 回転 (手動制御)
+            ctx.scale(zoomLevel, zoomLevel);    // スケール（ズーム） (手動制御)
+            ctx.translate(-centerX, -centerY);  // 元の座標系に戻す 
+
+            for (const p of particles) {
+                p.update(centerX, centerY);
+                p.draw();
+            }
+
+            ctx.restore(); // トランスフォーメーションをリセット
+            // ---------------------------------
+            
+            time += 0.01;
+
+            requestAnimationFrame(animate);
+        }
+
+        // --- ウィンドウリサイズ処理 ---
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+
+        // --- イベントリスナー ---
+        window.addEventListener('resize', resizeCanvas);
+        
+        // クリックイベントで新しい目標パターンを設定（※変化の加速として機能）
+        canvas.addEventListener('click', () => {
+            // 既に変化中の場合は、強制的に目標値を現在値に近づけることで変化を加速させる
+            if (transitionProgress < 1) {
+                transitionProgress = 0.95; // 変化を完了近くまで進める
+            } else {
+                // 変化が完了している場合は、新しいパターン設定を開始
+                setTargetPattern();
+            }
+        });
+        
+        // 連続的な変化に修正したため、setIntervalは削除
+
+        // --- マウスドラッグによる回転制御 ---
+        canvas.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            lastMouseX = e.clientX;
+            canvas.style.cursor = 'grabbing';
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (isDragging) {
+                const deltaX = e.clientX - lastMouseX;
+                rotationAngle += deltaX * 0.005; 
+                lastMouseX = e.clientX;
+            }
+        });
+
+        const stopDragging = () => {
+            isDragging = false;
+            canvas.style.cursor = 'pointer'; 
+        };
+
+        canvas.addEventListener('mouseup', stopDragging);
+        canvas.addEventListener('mouseleave', stopDragging); 
+
+        // --- マウスホイールによるズーム制御 ---
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault(); 
+
+            const direction = e.deltaY > 0 ? -1 : 1;
+            
+            zoomLevel += direction * ZOOM_INCREMENT;
+
+            zoomLevel = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoomLevel));
+        });
+
+        // --- 実行 ---
+        resizeCanvas();
+        init();
+    </script>
+</body>
+</html>
