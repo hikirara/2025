@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3Dトポロジー結び目アート</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Three.jsライブラリのロード --><script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- カメラ操作のためのOrbitControls --><script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0d1117;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100vw;
+            height: 100vh;
+        }
+        canvas {
+            display: block;
+            cursor: grab; /* マウスで操作できることを示唆 */
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Three.jsがレンダリングするキャンバスがここに追加されます --><div id="canvasContainer" class="w-full h-full"></div>
+
+<script>
+    // --- グローバル変数と定数 ---
+    let scene, camera, renderer, controls;
+    let particles = [];
+    let lines; // 粒子間の接続ライン
+    let lineGeometry;
+    let animationFrameId = null;
+
+    // 3Dアート用に設定値を調整
+    const PARTICLE_COUNT = 350; // 粒子の数
+    // トーラスの主半径とチューブ半径を調整
+    const TORUS_RADIUS = 0.15; // ドーナツの全体の半径
+    const TORUS_TUBE = 0.06; // ドーナツのチューブの半径 (細さ)
+    const BOX_SIZE = 10; // シミュレーション空間のサイズ
+    const REPULSION_CONSTANT = 0.02; // 反発力の強さ
+    const ATTRACTION_STRENGTH = 0.007; // 目標位置への集合力（引力）の強さ
+    const DAMPING_FACTOR = 0.985; // 減衰
+    const MIN_DISTANCE_SQUARED = (TORUS_RADIUS + TORUS_TUBE) * 2 * (TORUS_RADIUS + TORUS_TUBE) * 2; // トーラス同士が接触する距離
+    
+    // --- 浮遊感と形状維持のための設定 ---
+    const NOISE_STRENGTH = 0.0005; // 動きをランダムにする微小なノイズの強さ
+    // CENTERING_FORCEは集合力に置き換えられるため削除
+    const CONNECT_DISTANCE_SQUARED = 3.5 * 3.5; // 接続する距離の二乗
+    
+    // 目標座標をグローバルに保持
+    let targetKnotPositions; 
+
+    // --- 3Dパーティクルクラス ---
+    class Particle {
+        constructor(x, y, z) {
+            // 物理シミュレーション用の位置と速度
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            // 結び目の形がすぐに崩れないよう、初期速度はゼロに近づける
+            this.vx = (Math.random() - 0.5) * 0.01;
+            this.vy = (Math.random() - 0.5) * 0.01;
+            this.vz = (Math.random() - 0.5) * 0.01;
+            this.targetIndex = 0; // 目標とする結び目上のインデックス
+
+            // 3Dメッシュの作成 (幾何学的要素)
+            const geometry = new THREE.TorusGeometry(TORUS_RADIUS, TORUS_TUBE, 8, 16); // radius, tube, radialSegments, tubularSegments
+            const material = new THREE.MeshBasicMaterial({ color: 0xffffff }); // 白 (White)
+            this.mesh = new THREE.Mesh(geometry, material);
+            this.mesh.position.set(x, y, z);
+            scene.add(this.mesh);
+
+            // トーラスの向きをランダムに初期化
+            this.mesh.rotation.x = Math.random() * Math.PI * 2;
+            this.mesh.rotation.y = Math.random() * Math.PI * 2;
+            this.mesh.rotation.z = Math.random() * Math.PI * 2;
+        }
+
+        // 速度と減衰に基づいて位置を更新
+        update() {
+            // 微小なノイズを追加して浮遊感を強調
+            this.vx += (Math.random() - 0.5) * NOISE_STRENGTH;
+            this.vy += (Math.random() - 0.5) * NOISE_STRENGTH;
+            this.vz += (Math.random() - 0.5) * NOISE_STRENGTH;
+            
+            this.vx *= DAMPING_FACTOR;
+            this.vy *= DAMPING_FACTOR;
+            this.vz *= DAMPING_FACTOR;
+            
+            this.x += this.vx;
+            this.y += this.vy;
+            this.z += this.vz;
+
+            this.mesh.position.set(this.x, this.y, this.z);
+
+            // トーラス自体のランダムな回転を追加して、より有機的に
+            this.mesh.rotation.x += (Math.random() - 0.5) * 0.01;
+            this.mesh.rotation.y += (Math.random() - 0.5) * 0.01;
+            this.mesh.rotation.z += (Math.random() - 0.5) * 0.01;
+        }
+    }
+
+    // --- 初期化と環境設定 ---
+
+    function init3D() {
+        const container = document.getElementById('canvasContainer');
+        
+        // 1. シーンのセットアップ
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0d1117); 
+
+        // 2. カメラのセットアップ
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = BOX_SIZE * 2.5; // 初期位置を遠ざけて、集合の様子を見やすく
+
+        // 3. レンダラーのセットアップ
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        container.appendChild(renderer.domElement);
+
+        // 4. カメラコントロール
+        controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true; 
+        controls.dampingFactor = 0.05;
+        controls.minDistance = 3; 
+        controls.maxDistance = 30; 
+        
+        // 自動回転を有効化
+        controls.autoRotate = true; 
+        controls.autoRotateSpeed = 0.5; 
+
+        // 5. パーティクルとラインの初期化
+        initializeParticles();
+        setupLines();
+    }
+
+    // 目標結び目の座標を計算するヘルパー関数
+    function calculateKnotPositions(count) {
+        const KNOT_RADIUS = BOX_SIZE * 0.7; // 結び目の大きさを調整
+        const p = 2; // X, Y軸の回転数 (トレフォイル結び目)
+        const q = 3; // Z軸のうねりの数
+        const positions = [];
+
+        for (let i = 0; i < count; i++) {
+            const t = (i / count) * Math.PI * 2;
+
+            // トレフォイル結び目の形状を定義するパラメトリック方程式
+            const x = KNOT_RADIUS * Math.cos(p * t) * (1 + 0.5 * Math.cos(q * t));
+            const y = KNOT_RADIUS * Math.sin(p * t) * (1 + 0.5 * Math.cos(q * t));
+            const z = KNOT_RADIUS * 0.5 * Math.sin(q * t); 
+            positions.push(new THREE.Vector3(x, y, z));
+        }
+        return positions;
+    }
+
+    // パーティクル配列の初期化
+    function initializeParticles() {
+        particles.forEach(p => scene.remove(p.mesh)); 
+        particles = [];
+        
+        // 目標となる結び目の座標を一度計算
+        targetKnotPositions = calculateKnotPositions(PARTICLE_COUNT);
+
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+            // 初期位置を空間内にランダムに広く散らばせる
+            const x = (Math.random() - 0.5) * BOX_SIZE * 4;
+            const y = (Math.random() - 0.5) * BOX_SIZE * 4;
+            const z = (Math.random() - 0.5) * BOX_SIZE * 4;
+
+            const p = new Particle(x, y, z);
+            // 各粒子が目標とする結び目上のインデックスを設定
+            p.targetIndex = i; 
+            particles.push(p);
+        }
+    }
+
+    // 接続ライン (トポロジー) のセットアップ
+    function setupLines() {
+        // LineSegmentsは、頂点ペアごとに線を描画します
+        const maxVertices = PARTICLE_COUNT * PARTICLE_COUNT * 2; 
+        lineGeometry = new THREE.BufferGeometry();
+        
+        const positions = new Float32Array(maxVertices * 3); 
+        lineGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3).setUsage(THREE.DynamicDrawUsage));
+
+        lineMaterial = new THREE.LineBasicMaterial({ 
+            color: 0xffffff, // 白 (White)
+            transparent: true, 
+            opacity: 0.5, // ラインをより明確に
+            blending: THREE.AdditiveBlending 
+        });
+
+        lines = new THREE.LineSegments(lineGeometry, lineMaterial);
+        scene.add(lines);
+    }
+    
+    // --- 物理シミュレーションと描画 ---
+
+    // 粒子間の3D反発力と中央への引力を計算
+    function calculateForces() {
+        for (let i = 0; i < particles.length; i++) {
+            const p1 = particles[i];
+            
+            // 1. 目標位置への集合力（引力）を適用
+            const targetPos = targetKnotPositions[p1.targetIndex];
+            
+            const dx_t = targetPos.x - p1.x;
+            const dy_t = targetPos.y - p1.y;
+            const dz_t = targetPos.z - p1.z;
+
+            // 距離に比例した力を適用 (目標へ引き寄せる)
+            p1.vx += dx_t * ATTRACTION_STRENGTH;
+            p1.vy += dy_t * ATTRACTION_STRENGTH;
+            p1.vz += dz_t * ATTRACTION_STRENGTH;
+
+            // 2. 他の粒子との反発力を計算
+            for (let j = i + 1; j < particles.length; j++) {
+                const p2 = particles[j];
+
+                // 距離ベクトル (p1 から p2 へ)
+                const dx = p1.x - p2.x;
+                const dy = p1.y - p2.y;
+                const dz = p1.z - p2.z;
+
+                const distanceSq = dx * dx + dy * dy + dz * dz;
+
+                const clampedDistanceSq = Math.max(distanceSq, MIN_DISTANCE_SQUARED);
+                const distance = Math.sqrt(clampedDistanceSq);
+
+                // 反発力の大きさ F = K / r^2
+                const forceMagnitude = REPULSION_CONSTANT / clampedDistanceSq;
+
+                // 力をベクトルに分解
+                const fx = forceMagnitude * (dx / distance);
+                const fy = forceMagnitude * (dy / distance);
+                const fz = forceMagnitude * (dz / distance);
+
+                // p1 と p2 に反発力を適用
+                p1.vx += fx;
+                p1.vy += fy;
+                p1.vz += fz;
+                
+                p2.vx -= fx;
+                p2.vy -= fy;
+                p2.vz -= fz;
+            }
+        }
+    }
+
+    // ラインの頂点を更新してトポロジーを再描画
+    function updateLines() {
+        let linePositions = lines.geometry.attributes.position.array;
+        let lineIndex = 0;
+
+        for (let i = 0; i < particles.length; i++) {
+            const p1 = particles[i];
+            for (let j = i + 1; j < particles.length; j++) {
+                const p2 = particles[j];
+
+                const dx = p1.x - p2.x;
+                const dy = p1.y - p2.y;
+                const dz = p1.z - p2.z;
+                const distanceSq = dx * dx + dy * dy + dz * dz;
+
+                // 近い粒子間のみを線で結び、有機的な形状（トポロジー）を形成
+                if (distanceSq < CONNECT_DISTANCE_SQUARED) {
+                    // p1 の座標
+                    linePositions[lineIndex++] = p1.x;
+                    linePositions[lineIndex++] = p1.y;
+                    linePositions[lineIndex++] = p1.z;
+                    
+                    // p2 の座標
+                    linePositions[lineIndex++] = p2.x;
+                    linePositions[lineIndex++] = p2.y;
+                    linePositions[lineIndex++] = p2.z;
+                }
+            }
+        }
+
+        // 使用しなかった頂点データをリセット
+        for (let k = lineIndex; k < linePositions.length; k++) {
+            linePositions[k] = 0;
+        }
+
+        // 頂点データの更新をThree.jsに通知
+        lines.geometry.attributes.position.needsUpdate = true;
+        // 描画範囲を実際の接続数に限定
+        lines.geometry.setDrawRange(0, lineIndex / 3);
+    }
+
+    // メインのループ
+    function loop() {
+        calculateForces(); // 1. 3D反発力と集合力を計算
+        
+        particles.forEach(p => {
+            p.update();     // 2. 速度と位置を更新（ノイズ追加済）
+        });
+
+        updateLines(); // 4. トポロジーラインを更新
+        controls.update(); // 5. カメラコントロールを更新（自動回転を含む）
+        renderer.render(scene, camera); // 6. 描画
+
+        animationFrameId = requestAnimationFrame(loop);
+    }
+
+    // --- イベントハンドラ ---
+
+    // ウィンドウリサイズ処理
+    function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    // ページロード時とウィンドウリサイズ時の処理
+    window.addEventListener('load', () => {
+        init3D();
+        loop(); // アニメーション開始
+    });
+    window.addEventListener('resize', onWindowResize);
+
+</script>
+</body>
+</html>
