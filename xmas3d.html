@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>シンプルなモノクロラインアート（3D/アルファベット）</title>
+    <!-- Tailwind CSSの読み込み (使用しないが念のため残す) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Font: Cutive Mono (文字描画に使用) -->
+    <link href="https://fonts.googleapis.com/css2?family=Cutive+Mono&display=swap" rel="stylesheet">
+    
+    <!-- Three.jsの読み込み -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- OrbitControlsの読み込み (カメラ操作用) -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <style>
+        /* 背景を白に変更し、描画を黒にする */
+        body {
+            background-color: #FFFFFF; /* 背景色を白に変更 */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            width: 100vw;
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Cutive Mono', monospace;
+            cursor: grab; /* ドラッグ操作を促すカーソル */
+        }
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+
+    <script>
+        // --- Three.js グローバル変数 ---
+        let scene, camera, renderer, controls;
+        let D_W, D_H;
+        let charSize; // 3D空間における要素の基本サイズ
+        
+        // --- アートワーク グローバル変数 ---
+        let characterSets = []; 
+        let currentText = "MERRY CHRISTMAS"; // 描画するテキスト
+        let globalStreamGroup; // すべてのストリームを含むグループ
+
+        // --- アニメーション状態 ---
+        // 0: Normal Scroll, 1: Fast Scroll, 2: Subtle Scroll, 3: Form Swirl Shape
+        let animationState = 0; 
+        let globalSpeedFactor = 1.0; 
+
+        // カラーパレット (背景: 白, ライン/文字: 黒)
+        const lineColor = 0x000000; // ラインおよび文字を黒に変更
+        
+        // Sphere GeometryとMaterialは文字描画のため削除
+
+
+        /**
+         * 文字を描画したテクスチャを持つ THREE.Sprite を作成する
+         * @param {string} text - 描画する文字
+         * @param {number} size - 3D空間での基本サイズ
+         * @param {number} color - 文字色 (0xRRGGBB)
+         * @returns {THREE.Sprite}
+         */
+        function createSprite(text, size, color) {
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            
+            // スプライトの解像度
+            const resolution = 64; 
+            canvas.width = resolution;
+            canvas.height = resolution;
+
+            context.font = `bold ${resolution * 0.8}px 'Cutive Mono', monospace`;
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            
+            // 描画色を黒に設定
+            const hexColor = '#' + color.toString(16).padStart(6, '0');
+            context.fillStyle = hexColor;
+
+            // 文字の描画
+            context.fillText(text, resolution / 2, resolution / 2);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.minFilter = THREE.LinearFilter;
+
+            const material = new THREE.SpriteMaterial({ 
+                map: texture,
+                transparent: true,
+            });
+
+            const sprite = new THREE.Sprite(material);
+            // スプライトのサイズを設定 (球体より目立たせるため少し大きく)
+            sprite.scale.set(size * 2, size * 2, 1); 
+            return sprite;
+        }
+
+
+        /**
+         * 3D環境のセットアップ
+         */
+        function setupThreeJs() {
+            D_W = window.innerWidth;
+            D_H = window.innerHeight;
+
+            // シーン
+            scene = new THREE.Scene();
+            
+            // カメラ
+            camera = new THREE.PerspectiveCamera(75, D_W / D_H, 0.1, 1000);
+            camera.position.z = 150; 
+
+            // レンダラー
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(D_W, D_H);
+            renderer.setClearColor(0xFFFFFF); // レンダラーの背景色を白に変更
+            
+            const container = document.getElementById('container');
+            while (container.firstChild) {
+                container.removeChild(container.firstChild);
+            }
+            container.appendChild(renderer.domElement);
+
+            // OrbitControlsの設定 (カメラ操作)
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true; 
+            controls.dampingFactor = 0.05;
+            controls.screenSpacePanning = false;
+
+            // ポインターアップ時のクリック判定のためにカスタムプロパティを初期化
+            controls.oldPolarAngle = controls.getPolarAngle();
+            controls.oldAzimuthalAngle = controls.getAzimuthalAngle();
+            controls.lastPosition = new THREE.Vector3().copy(camera.position); 
+
+            // グローバルグループ (ストリーム全体を保持)
+            globalStreamGroup = new THREE.Group();
+            scene.add(globalStreamGroup);
+            
+            // 要素の基本サイズを決定
+            charSize = Math.max(1.0, Math.min(3.0, D_H / 200)); 
+            
+            // 球体のジオメトリとマテリアルは不要
+            
+            initializeCharacters();
+        }
+
+        /**
+         * 要素セット（ストリーム）を3D空間に初期配置します
+         */
+        function initializeCharacters() {
+            // 既存のオブジェクトをクリア
+            globalStreamGroup.clear();
+            characterSets = [];
+
+            // テキストの長さに依存せず、ストリームの数は一定
+            const charLength = currentText.length;
+            const numStreams = 10; 
+            const depthRange = 500; 
+            const initialXSpread = 200; 
+
+            // ラインの色は黒
+            // WebGLの制約でlinewidthが固定されるため、opacityを下げて視覚的に細く見せる
+            const lineMaterial = new THREE.LineBasicMaterial({ 
+                color: lineColor, 
+                linewidth: 1, 
+                transparent: true, // 透明度を有効化
+                opacity: 0.6 // 透明度を下げて、線を視覚的に細く見せる
+            });
+
+            for (let i = 0; i < numStreams; i++) {
+                const streamGroup = new THREE.Group();
+                const currentSet = [];
+                
+                // ストリーム全体のZ位置をランダムに配置
+                const initialZOffset = Math.random() * depthRange - depthRange / 2;
+                // ストリーム全体のX位置をランダムに配置
+                const initialXOffset = Math.random() * initialXSpread - initialXSpread / 2;
+
+                // 文字の生成と配置
+                currentText.split('').forEach((char, index) => {
+                    // Y座標はストリーム内でのオフセット
+                    const initialY = (index - charLength / 2) * charSize * 2; 
+
+                    // ベース速度
+                    const baseSpeed = 0.5 + Math.random() * 1.0; 
+                    
+                    // 振幅 (微細な動き)
+                    const amplitude = Math.random() * 0.5 + 0.2; 
+                    const frequency = 0.01 + Math.random() * 0.02; 
+                    const movementType = Math.floor(Math.random() * 3); 
+
+                    const charObj = {
+                        char: char, 
+                        pos: new THREE.Vector3(initialXOffset, initialY, initialZOffset),
+                        baseY: initialY,  
+                        baseVx: baseSpeed,
+                        time: Math.random() * 100, 
+                        amplitude: amplitude,
+                        frequency: frequency,
+                        type: movementType,
+                        initialPos: new THREE.Vector3(initialXOffset, initialY, initialZOffset),
+                        mesh: null // 3Dオブジェクト (Sprite)
+                    };
+
+                    // *** THREE.Sprite を作成するロジック ***
+                    const charToDisplay = currentText[index % currentText.length]; 
+                    const sprite = createSprite(charToDisplay, charSize, lineColor);
+                    sprite.position.copy(charObj.pos);
+                    streamGroup.add(sprite);
+                    charObj.mesh = sprite;
+                    // ****************************************
+                    
+                    currentSet.push(charObj);
+                });
+
+                // Line Geometryを作成し、ストリームに接続
+                const lineGeometry = new THREE.BufferGeometry().setFromPoints(currentSet.map(c => c.pos));
+                const line = new THREE.Line(lineGeometry, lineMaterial);
+                streamGroup.add(line);
+                currentSet.lineGeometry = lineGeometry; 
+
+                streamGroup.userData = { stream: currentSet }; 
+                globalStreamGroup.add(streamGroup);
+                characterSets.push(currentSet);
+            }
+        }
+
+        /**
+         * 全ての要素セット内の要素を更新し、移動させます。
+         */
+        function updateCharacters() {
+            const attractionFactor = 0.005; // 中央への吸引力 (3D向けに調整)
+            const swirlFactor = 0.01;      // 渦を巻く成分 (3D向けに調整)
+            const resetZ = -300;           // スクロール時のZ軸リセット位置 (遠方)
+
+            // アニメーション状態に応じてグローバル速度係数を設定
+            switch (animationState) {
+                case 0: globalSpeedFactor = 1.0; break; // Normal
+                case 1: globalSpeedFactor = 4.0; break; // Fast
+                case 2: globalSpeedFactor = 0.2; break; // Subtle
+                case 3: globalSpeedFactor = 0.0; break; // Shape Mode (スクロール停止)
+            }
+
+            characterSets.forEach(set => {
+                // Line Geometryの頂点配列を取得
+                const positions = set.lineGeometry.attributes.position.array;
+                
+                set.forEach((char, index) => {
+                    char.time += char.frequency * (animationState === 3 ? 0.1 : globalSpeedFactor);
+
+                    // 微細振動の振幅乗数
+                    let amplitudeMultiplier = 1.0;
+                    if (animationState === 2) {
+                        amplitudeMultiplier = 0.1; 
+                    } else if (animationState === 1) {
+                        amplitudeMultiplier = 2.0; 
+                    }
+
+                    // 微細振動成分の計算
+                    let subtleY = 0;
+                    switch (char.type) {
+                        case 0: subtleY = Math.sin(char.time * 2) * (char.amplitude * 0.5 * amplitudeMultiplier); break;
+                        case 1: subtleY = Math.cos(char.time * 0.5) * (char.amplitude * 0.8 * amplitudeMultiplier); break;
+                        case 2: subtleY = (Math.random() - 0.5) * 0.5 * amplitudeMultiplier; break;
+                    }
+                    
+                    if (animationState === 3) {
+                        // --- 状態 3: 形形成モード (Swirl Cluster) ---
+                        
+                        // 1. 中央 (0, 0, 0) へのベクトル計算
+                        const dx = -char.pos.x;
+                        const dy = -char.pos.y;
+                        const dz = -char.pos.z;
+
+                        // 2. 吸引力の適用
+                        char.pos.x += dx * attractionFactor;
+                        char.pos.y += dy * attractionFactor;
+                        char.pos.z += dz * attractionFactor;
+
+                        // 3. 渦を巻く回転成分の適用 (X-Y平面で回転)
+                        const rotationX = -dy * swirlFactor; 
+                        const rotationY = dx * swirlFactor;
+
+                        char.pos.x += rotationX;
+                        char.pos.y += rotationY;
+                        
+                        // 4. 微細振動を少し加える
+                        char.pos.y += subtleY * 0.5;
+
+                    } else {
+                        // --- 状態 0, 1, 2: スクロールモード ---
+                        
+                        // X方向の速度
+                        const speed = char.baseVx * globalSpeedFactor;
+                        
+                        // Z方向の移動（スクロール）
+                        char.pos.z += speed;
+                        
+                        // Y位置はベース座標 + 振動成分
+                        char.pos.y = char.baseY + subtleY;
+                        
+                        // X位置にわずかなランダムノイズを加える
+                        char.pos.x += (Math.random() - 0.5) * 0.05 * globalSpeedFactor;
+
+                        // 画面の手前 (Z軸の正の方向) を超えたら初期位置に戻す (ループ)
+                        if (char.pos.z > 300) {
+                            char.pos.z = resetZ; 
+                            // XとYを初期位置に戻し、ストリームの再開位置をランダム化
+                            char.pos.x = char.initialPos.x + (Math.random() - 0.5) * 50;
+                            char.pos.y = char.initialPos.y;
+                        }
+                    }
+
+                    // 3Dメッシュの位置を更新
+                    char.mesh.position.copy(char.pos);
+
+                    // Line Geometry の頂点配列を更新
+                    positions[index * 3] = char.pos.x;
+                    positions[index * 3 + 1] = char.pos.y;
+                    positions[index * 3 + 2] = char.pos.z;
+                });
+                
+                // 頂点の変更をThree.jsに通知
+                set.lineGeometry.attributes.position.needsUpdate = true;
+            });
+        }
+
+        /**
+         * メインのアニメーションループ
+         */
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // カメラ操作を更新
+            controls.update(); 
+            
+            // 全ての要素の位置を更新
+            updateCharacters();
+            
+            // レンダリング
+            renderer.render(scene, camera);
+        }
+
+        // --- イベントリスナー (クリックでの状態切り替え) ---
+
+        let isPointerDown = false;
+        let downTime = 0;
+
+        /** ポインターダウンイベント (クリックまたはドラッグ開始) */
+        document.getElementById('container').addEventListener('pointerdown', (e) => {
+            isPointerDown = true;
+            downTime = Date.now();
+            // カーソルを「掴んでいる」状態に変更
+            document.body.style.cursor = 'grabbing';
+        });
+
+        /** ポインターアップイベント (ドラッグ終了またはクリック) */
+        document.getElementById('container').addEventListener('pointerup', (e) => {
+            isPointerDown = false;
+            // カーソルを「掴める」状態に戻す
+            document.body.style.cursor = 'grab';
+
+            // 短い時間でポインターが動いていない場合を「クリック」と判定
+            const duration = Date.now() - downTime;
+            
+            // カメラが動いたかどうかを判定 (角度の変化をチェック)
+            const moved = controls.getPolarAngle() !== controls.oldPolarAngle || controls.getAzimuthalAngle() !== controls.oldAzimuthalAngle;
+
+            if (duration < 300 && !moved) { // 300ms以下の短い操作で回転等がなければクリック
+                // クリックとして処理: 状態をトグル
+                animationState = (animationState + 1) % 4; 
+
+                // Shape Modeからスクロール Modeに戻る際、要素の位置をリセット
+                if (animationState !== 3) {
+                     characterSets.forEach(set => {
+                        set.forEach(char => {
+                            // Z位置を遠方にリセットし、すぐにスクロールを開始させる
+                            char.pos.z = resetZ;
+                            char.pos.x = char.initialPos.x;
+                            char.pos.y = char.initialPos.y;
+                        });
+                    });
+                }
+            }
+            // 次のフレームのために角度を保存
+            controls.oldPolarAngle = controls.getPolarAngle();
+            controls.oldAzimuthalAngle = controls.getAzimuthalAngle();
+            // lastPosition は Three.jsのカメラ移動チェックに使われる可能性があるため、更新を継続
+            controls.lastPosition.copy(camera.position); 
+        });
+
+        /** ウィンドウリサイズハンドラ */
+        window.addEventListener('resize', () => {
+            D_W = window.innerWidth;
+            D_H = window.innerHeight;
+            
+            camera.aspect = D_W / D_H;
+            camera.updateProjectionMatrix();
+            renderer.setSize(D_W, D_H);
+        });
+        
+        // --- 初回起動 ---
+        setupThreeJs();
+        animate(); 
+
+    </script>
+</body>
+</html>
