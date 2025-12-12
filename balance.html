@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>モノクロ物理落下と積み重なり</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Matter.js Physics Engine CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.18.0/matter.min.js"></script>
+    <style>
+        /* Interフォントを使用 */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: white; /* ページ背景は白 */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            width: 100vw;
+            margin: 0;
+            overflow: hidden; /* スクロール防止 */
+        }
+        /* Matter.jsのレンダリング要素を画面全体にフィットさせる */
+        #matter-container {
+            width: 100%;
+            height: 100%;
+            background-color: white;
+            /* Matter.jsのCanvasがここに挿入されます */
+            cursor: pointer; /* クリック可能であることを示す */
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 画面全体にフィットするコンテナ (指示テキストは削除) -->
+    <div id="matter-container"></div>
+    
+    <script>
+        // Matter.jsのエイリアス
+        const { Engine, Render, World, Bodies, Events, Body, Composites, Vertices } = Matter;
+
+        const container = document.getElementById('matter-container');
+        let engine;
+        let render;
+        let allShapes = [];
+
+        // 黄金比 (Phi) を定義
+        const PHI = (1 + Math.sqrt(5)) / 2; // 1.61803...
+        const BASE_SIZE = 80; // 基準サイズ
+
+        // 黄金比に基づいたサイズ設定
+        const GOLDEN_SIZE_1 = Math.round(BASE_SIZE * PHI); // 約 130
+        const GOLDEN_SIZE_2 = Math.round(BASE_SIZE * PHI * PHI); // 約 210
+
+        const shapeData = {
+            // サイズA
+            'circle': { label: '円', density: 0.0010, initialSize: BASE_SIZE, friction: 0.1 }, 
+            
+            // サイズ A * PHI (幅)
+            'square': { label: '正方形', density: 0.0012, initialSize: GOLDEN_SIZE_1, friction: 0.8 }, 
+            // サイズ W * H (W/H = PHI)
+            'rectangle': { label: '長方形', density: 00015, initialSize: { w: GOLDEN_SIZE_1, h: BASE_SIZE }, friction: 0.9 }, 
+            
+            // サイズ A * PHI^2 (最も大きく、不安定要素を強調)
+            'donut': { label: 'ドーナツ', density: 0.0020, initialSize: GOLDEN_SIZE_2, friction: 0.6 }, 
+            'triangle': { label: '正三角形', density: 0.0030, initialSize: GOLDEN_SIZE_2, friction: 0.05 }, 
+        };
+
+        // Matter.jsの初期化関数
+        function setupMatter() {
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+
+            // 既存のエンジンとレンダラーを破棄
+            if (render) {
+                Render.stop(render);
+                World.clear(engine.world);
+                Engine.clear(engine);
+                container.innerHTML = '';
+            }
+
+            // 1. エンジンを作成
+            engine = Engine.create();
+            engine.gravity.scale = 0.0015; // 落下速度を調整
+
+            // 2. レンダラーを作成 (ソリッドブラック設定)
+            render = Render.create({
+                element: container,
+                engine: engine,
+                options: {
+                    width: width,
+                    height: height,
+                    wireframes: false, // ソリッド塗りつぶし (モノクロ表現)
+                    showVelocity: false,
+                    showAngleIndicator: false,
+                    background: 'white', // 背景は白
+                }
+            });
+
+            // 3. 画面の四隅に壁を作成 (地面の代わり) - 黒塗り
+            const wallThickness = 50;
+            const wallRender = { fillStyle: 'black', strokeStyle: 'black', lineWidth: 0 };
+            
+            // 円の欠けを修正するため、下の壁の中心Y座標を1ピクセル上に調整
+            const adjustedWallY = height + wallThickness / 2 - 1; 
+
+            const walls = [
+                // 下の壁 (地面の代わり) - 調整済み
+                Bodies.rectangle(width / 2, adjustedWallY, width, wallThickness, { 
+                    isStatic: true, 
+                    label: 'bottomWall', 
+                    render: wallRender 
+                }),
+                // 左の壁
+                Bodies.rectangle(-wallThickness / 2, height / 2, wallThickness, height * 2, { 
+                    isStatic: true, 
+                    label: 'leftWall', 
+                    render: wallRender 
+                }),
+                // 右の壁
+                Bodies.rectangle(width + wallThickness / 2, height / 2, wallThickness, height * 2, { 
+                    isStatic: true, 
+                    label: 'rightWall', 
+                    render: wallRender 
+                }),
+            ];
+            
+            // 4. 図形を作成してワールドに追加 (ランダムなX座標、時間差で落下)
+            createShapes(width, height);
+            
+            // 壁のみをワールドにすぐに追加
+            World.add(engine.world, walls);
+
+            // 5. エンジンとレンダラーを実行
+            Render.run(render);
+            Engine.run(engine);
+        }
+
+        // 図形を作成し、時間差で落下させる
+        function createShapes(width, height) {
+            allShapes = [];
+            
+            const stackData = [
+                // 落下順を制御するため、配列の順番が重要
+                shapeData.rectangle,
+                shapeData.square,
+                shapeData.donut,
+                shapeData.circle,
+                shapeData.triangle,
+            ];
+
+            // 落下アニメーションのためのY座標と時間差 (最大サイズに合わせて間隔を調整)
+            const initialY = -300; // 画面外上部からスタートをさらに引き上げる
+            const ySpacing = 350; // 最大図形サイズ(210)に合わせて間隔を広げる
+            const dropDelay = 300; // ms
+
+            stackData.forEach((shapeDef, index) => {
+                let body;
+                // 全て黒塗り
+                const renderOptions = { fillStyle: 'black', strokeStyle: 'black', lineWidth: 0 };
+                const commonOptions = { 
+                    density: shapeDef.density, 
+                    restitution: 0.1, 
+                    friction: shapeDef.friction, 
+                    label: shapeDef.label, 
+                    render: renderOptions 
+                };
+                
+                // X座標を中央寄りのランダムな位置に設定
+                const xPos = width * 0.4 + Math.random() * (width * 0.2); 
+                // Y座標は順番に上から配置
+                const yPos = initialY - index * ySpacing; // 上にずらして落下距離を長くする
+
+                if (shapeDef.label === '長方形' || shapeDef.label === '正方形') {
+                    const w = shapeDef.initialSize.w || shapeDef.initialSize;
+                    const h = shapeDef.initialSize.h || shapeDef.initialSize;
+                    body = Bodies.rectangle(xPos, yPos, w, h, commonOptions);
+                } else if (shapeDef.label === '円' || shapeDef.label === 'ドーナツ') {
+                    const r = shapeDef.initialSize;
+                    body = Bodies.circle(xPos, yPos, r, commonOptions);
+                } else if (shapeDef.label === '正三角形') {
+                    const r = shapeDef.initialSize / 1.5;
+                    // 正三角形は最も下に落下するように配置
+                    body = Bodies.polygon(xPos, yPos, 3, r, commonOptions); 
+                }
+
+                allShapes.push(body);
+                
+                // 時間差でワールドに追加し、落下させる
+                setTimeout(() => {
+                    World.add(engine.world, body);
+                }, index * dropDelay);
+            });
+        }
+
+        // リセット機能
+        function resetSimulation() {
+            setupMatter();
+        }
+
+        // 初期設定
+        window.onload = resetSimulation;
+
+        // ウィンドウサイズ変更時に再初期化 (レスポンシブ対応)
+        window.addEventListener('resize', resetSimulation);
+
+        // クリックイベントでリセット
+        document.addEventListener('click', resetSimulation);
+
+    </script>
+</body>
+</html>
